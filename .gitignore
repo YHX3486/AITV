@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+web/dist/
+
+# 运行时数据（数据库 + 上传/生成的文件）
+server/data/
+
+# 密钥
+.env
+server/.env
+
+# 临时/验证脚本
+server/check_*.py
+server/test_req.json
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
