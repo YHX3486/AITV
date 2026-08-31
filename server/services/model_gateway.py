@@ -1,5 +1,5 @@
 """所有百炼调用的唯一入口。
-D1: LLM 流式 | D3: 图像异步任务 | 换模型: 图像同步通道（qwen-image-2.0 系）。
+LLM 流式 / 图像（同步+异步双通道）/ 视频（wan2.7 异步通道）。
 """
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -20,12 +20,10 @@ class FetchResult:
 
 class ModelGateway:
     def __init__(self):
-        # read=180：同步模式图像生成可能挂 1-2 分钟，留足余量
         self.http = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, read=180.0, write=60.0),
             follow_redirects=True,
         )
-        # 结果下载单独用长超时客户端（视频可能几十 MB）
         self.download = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, read=300.0),
             follow_redirects=True,
@@ -58,13 +56,6 @@ class ModelGateway:
         self, model: str, prompt: str, size: str, n: int = 1,
         ref_images: list[str] | None = None,
     ) -> str:
-        """提交图像异步任务 → 百炼 task_id。
-
-        - 端点：/services/aigc/image-generation/generation（与同步端点不同！）
-        - payload：messages 对话式；T2I 只有 text，I2I 前置 1-3 个 image
-        - ref_images：参考图列表（公网 URL 或 data:base64 前缀字符串），D6 启用
-        - 尺寸分隔符必须是 *（星号），不是 x
-        """
         content: list[dict] = []
         for img in ref_images or []:
             content.append({"image": img})
@@ -91,14 +82,12 @@ class ModelGateway:
         data = resp.json()
         return data["output"]["task_id"]
 
-    # ---------- 图像：同步通道（qwen-image-2.0 系只支持同步）----------
+    # ---------- 图像：同步通道（qwen-image-2.0 系）----------
 
     async def generate_image_sync(
         self, model: str, prompt: str, size: str, n: int = 1,
         ref_images: list[str] | None = None,
     ) -> list[str]:
-        """同步模式生成图像：POST 后挂住等结果，直接返回图片 URL 列表。
-        不产生 task_id。可能等待 30-180 秒，只能在 asyncio 协程里调用。"""
         content: list[dict] = []
         for img in ref_images or []:
             content.append({"image": img})
@@ -114,13 +103,12 @@ class ModelGateway:
 
         resp = await self.http.post(
             f"{DASHSCOPE_BASE}/services/aigc/multimodal-generation/generation",
-            headers=self._headers(),   # 不带 async 头 = 同步模式
+            headers=self._headers(),
             json=payload,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        # HTTP 200 但业务失败（code 存在）
         if data.get("code"):
             raise RuntimeError(f"{data.get('code')}: {data.get('message')}")
 
@@ -133,10 +121,44 @@ class ModelGateway:
             raise RuntimeError(f"同步生成未返回图片: {data}")
         return urls
 
-    # ---------- 任务查询（异步通道用）----------
+    # ---------- 视频（wan2.7 系，异步通道）----------
+
+    async def submit_video(
+        self, model: str, prompt: str, resolution: str, duration: int,
+        first_frame: str | None = None, ratio: str | None = None,
+    ) -> str:
+        """提交视频异步任务 → 百炼 task_id。
+
+        wan2.7 协议（三段式，与图像 messages 式不同）：
+        - input.prompt：文本提示词
+        - input.media[]：首帧图（type=first_frame，url=Base64 data URI）
+        - parameters.resolution / duration / ratio（ratio 仅 t2v 有意义）
+        i2v 传 first_frame；t2v 不传 media。
+        """
+        payload: dict = {
+            "model": model,
+            "input": {"prompt": prompt},
+            "parameters": {"resolution": resolution, "duration": duration},
+        }
+        if ratio:
+            payload["parameters"]["ratio"] = ratio
+        if first_frame:
+            payload["input"]["media"] = [
+                {"type": "first_frame", "url": first_frame},
+            ]
+
+        resp = await self.http.post(
+            f"{DASHSCOPE_BASE}/services/aigc/video-generation/video-synthesis",
+            headers=self._headers(async_mode=True),
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["output"]["task_id"]
+
+    # ---------- 任务查询（异步通道通用）----------
 
     async def fetch(self, provider_task_id: str) -> FetchResult:
-        """查询百炼任务状态（GET /tasks/{id}，图/视频通用）。"""
         resp = await self.http.get(
             f"{DASHSCOPE_BASE}/tasks/{provider_task_id}",
             headers=self._headers(),
@@ -155,6 +177,9 @@ class ModelGateway:
                 for item in choice.get("message", {}).get("content") or []:
                     if isinstance(item, dict) and item.get("image"):
                         urls.append(item["image"])
+            # wan 视频系：output.video_url（单视频）
+            if not urls and out.get("video_url"):
+                urls = [out["video_url"]]
             result.urls = urls
         elif status in ("FAILED", "CANCELED", "UNKNOWN"):
             result.status = "failed"
@@ -162,7 +187,6 @@ class ModelGateway:
         return result
 
     async def download_file(self, url: str, dest_abs_path) -> int:
-        """下载结果到本地，返回字节数。长超时客户端。"""
         resp = await self.download.get(url)
         resp.raise_for_status()
         with open(dest_abs_path, "wb") as f:

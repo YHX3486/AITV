@@ -1,6 +1,5 @@
 """进程内任务执行器：提交 → 轮询/同步等待 → 下载落盘 → 登记 files。
-图像按模型自动分流：qwen-image-2.x → 同步通道；qwen-image-3.x → 异步通道。
-D6：参考图走 Base64 直传（文档证实 I2I 支持此格式，无需临时存储）。
+图像按模型分流：qwen-image-2.x → 同步；qwen-image-3.x / wan 视频 → 异步。
 """
 import asyncio
 import base64
@@ -22,7 +21,6 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 POLL_INTERVAL = 5
 
-# 这些前缀的图像模型只支持同步接口（文档：qwen-image-2.0 系仅支持同步）
 SYNC_IMAGE_MODELS = ("qwen-image-2",)
 
 
@@ -37,7 +35,6 @@ class TaskRunner:
         self.inflight: set[str] = set()
 
     async def run(self):
-        """主循环：扫库捞任务。"""
         while True:
             try:
                 with SessionLocal() as db:
@@ -51,7 +48,7 @@ class TaskRunner:
                         continue
                     self.inflight.add(t.id)
                     asyncio.create_task(self._lifecycle(t.id))
-            except Exception as e:   # noqa: BLE001 —— 主循环绝不能死
+            except Exception as e:   # noqa: BLE001
                 print(f"[TaskRunner] 主循环异常（忽略继续）: {e}")
             await asyncio.sleep(3)
 
@@ -64,10 +61,9 @@ class TaskRunner:
                 is_recovery = t.status == "running" and t.provider_task_id
 
             if is_recovery:
-                # 重启恢复：百炼侧任务还在跑，直接续查（不占新并发额度）
                 await self._poll(task_id)
             else:
-                async with self.sem:   # 并发额度覆盖提交→完成的整段
+                async with self.sem:
                     ok = await self._submit(task_id)
                     if ok:
                         await self._poll(task_id)
@@ -77,9 +73,8 @@ class TaskRunner:
             self.inflight.discard(task_id)
 
     async def _submit(self, task_id: str) -> bool:
-        """读 params → 按模型分流提交 → 更新任务状态。
-        返回 True = 异步任务已提交，需继续 _poll；
-        返回 False = 生命周期已结束（同步完成/失败），不要 _poll。"""
+        """读 params → 按类型/模型分流提交 → 更新任务状态。
+        返回 True = 需继续 _poll；False = 生命周期已结束。"""
         with SessionLocal() as db:
             t = db.get(Task, task_id)
             if not t or t.status != "queued":
@@ -88,27 +83,27 @@ class TaskRunner:
             model = t.model
             prompt = params.get("prompt", "")
             kind = t.kind
-            ref_file_ids = params.get("ref_file_ids", [])   # D6：参考图
+            ref_file_ids = params.get("ref_file_ids", [])
 
         size = params.get("size", "1328*1328")
         if "x" in size:
-            size = size.replace("x", "*")   # 兼容历史数据/注册表里的 x 写法
+            size = size.replace("x", "*")
 
-        # D6：本地文件 → data:base64 编码（百炼 I2I 直接收这个格式）
+        # 参考素材：本地文件 → data:base64（图像 I2I 与视频首帧共用）
         ref_images: list[str] = []
-        for fid in ref_file_ids[:3]:   # 文档：I2I 最多 3 张
+        for fid in ref_file_ids[:3]:
             encoded = self._encode_ref_image(fid)
             if encoded:
                 ref_images.append(encoded)
 
         try:
             if kind == "image" and is_sync_model(model):
-                # ==== 同步通道（qwen-image-2.0 系）====
+                # ==== 图像同步通道（qwen-image-2.0 系）====
                 with SessionLocal() as db:
                     t = db.get(Task, task_id)
                     if not t:
                         return False
-                    t.status = "running"   # 先点亮状态，前端可见
+                    t.status = "running"
                     db.commit()
 
                 urls = await self.gw.generate_image_sync(
@@ -127,12 +122,24 @@ class TaskRunner:
                     db.commit()
                 return False
             else:
-                # ==== 异步通道（qwen-image-3.0 系 / 视频）====
-                pid = await self.gw.submit_image(
-                    model=model, prompt=prompt, size=size,
-                    n=int(params.get("n", 1)),
-                    ref_images=ref_images,
-                )
+                # ==== 异步通道：图像 3.0 / wan 视频 ====
+                if kind == "video":
+                    # 视频：第一张参考图作首帧（Base64 data URI）
+                    first_frame = ref_images[0] if ref_images else None
+                    pid = await self.gw.submit_video(
+                        model=model,
+                        prompt=prompt,
+                        resolution=params.get("resolution", "720P"),
+                        duration=int(params.get("duration", 5)),
+                        first_frame=first_frame,
+                        ratio=params.get("ratio"),
+                    )
+                else:
+                    pid = await self.gw.submit_image(
+                        model=model, prompt=prompt, size=size,
+                        n=int(params.get("n", 1)),
+                        ref_images=ref_images,
+                    )
         except httpx.HTTPError as e:
             body = ""
             if hasattr(e, "response") and e.response is not None:
@@ -153,8 +160,7 @@ class TaskRunner:
         return True
 
     def _encode_ref_image(self, file_id: str) -> str | None:
-        """files 表查记录 → 读本地文件 → data:base64 编码。
-        文件缺失/超大返回 None（跳过该参考，不让整个任务挂掉）。"""
+        """files 表查记录 → 读本地文件 → data:base64 编码。"""
         with SessionLocal() as db:
             f = db.get(FileRecord, file_id)
             if not f:
@@ -167,20 +173,19 @@ class TaskRunner:
         except OSError:
             return None
 
-        # 文档要求：参考图不超过 10MB
+        # 视频首帧限 20MB，图像参考限 10MB——取更严的 10MB
         if len(raw) > 10 * 1024 * 1024:
             return None
 
         return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
     async def _poll(self, task_id: str):
-        """轮询直到终态（异步通道）。每轮检查任务行还在不在。"""
         while True:
             await asyncio.sleep(POLL_INTERVAL)
             with SessionLocal() as db:
                 t = db.get(Task, task_id)
                 if not t:
-                    return   # 节点被删→级联删行→退出
+                    return
                 pid = t.provider_task_id
                 kind = t.kind
 
@@ -206,13 +211,18 @@ class TaskRunner:
                 return
 
     async def _save_results(self, urls: list[str], kind: str) -> list[str]:
-        """立刻下载结果（远端 URL 会过期）→ data/generated/ → files 表。"""
+        """立刻下载结果 → data/generated/ → files 表。扩展名按 kind 推导。"""
         ids: list[str] = []
         for url in urls:
             file_id = str(uuid.uuid4())
-            ext = Path(url.split("?")[0]).suffix or (
-                mimetypes.guess_extension("image/png") or ".png"
-            )
+            # URL 自带扩展名优先（.mp4/.png）；没有则按 kind 推导
+            ext = Path(url.split("?")[0]).suffix
+            if not ext:
+                ext = (
+                    mimetypes.guess_extension(f"{kind}/mp4")
+                    if kind == "video"
+                    else (mimetypes.guess_extension("image/png") or ".png")
+                )
             rel = f"generated/{file_id}{ext}"
             await self.gw.download_file(url, GENERATED_DIR / f"{file_id}{ext}")
 
@@ -237,6 +247,5 @@ class TaskRunner:
 
 
 def start_task_runner():
-    """挂在 FastAPI lifespan 里的入口。"""
     runner = TaskRunner()
     return asyncio.create_task(runner.run())

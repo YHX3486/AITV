@@ -4,28 +4,22 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# 显式定位 server/.env，与启动目录无关
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# ---- API Key：缺失直接启动报错，不静默 ----
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY")
 if not DASHSCOPE_API_KEY:
     raise RuntimeError(
         "缺少 DASHSCOPE_API_KEY：请在 server/.env 里配置（参考 .env.example）"
     )
 
-# ---- 端点 ----
-DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"          # 图/视频 REST
-LLM_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"    # LLM 兼容模式
+DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
+LLM_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-# ---- 运行参数 ----
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", "50"))
 
-# ---- 模型注册表（按当前账号控制台校准）----
-# mode: sync = 同步接口（POST 挂住等结果，2.0 系只支持这个）
-#       async = 异步接口（提交拿 task_id → 轮询，3.0 支持）
-# ⚠️ 尺寸分隔符必须是 *（星号）
+# mode: sync = 同步接口（2.0 系图像）；async = 异步接口（3.0 图像 / wan / happyhorse 视频）
+# durations 按各家文档设：happyhorse [3,15]、wan2.7 [2,15]
 MODEL_REGISTRY = {
     "text": [
         {"id": "qwen3.7-flash-2026-07-15", "label": "Qwen3.7 Flash · 快"},
@@ -55,17 +49,29 @@ MODEL_REGISTRY = {
     ],
     "video": [
         {
-            "id": "wan2.7-tzv-2026-06-12",
-            "label": "文生视频 · TZV",
-            "durations": [5],
+            "id": "happyhorse-1.1-i2v",
+            "label": "图生视频 · HappyHorse",
+            "media": "first_frame",
+            "resolutions": ["480P", "720P", "1080P"],
+            "durations": [5, 10],
+            "ratios": [],
+        },
+        {
+            "id": "wan2.7-t2v-2026-06-12",
+            "label": "文生视频",
+            "media": None,
+            "resolutions": ["720P", "1080P"],
+            "durations": [2, 5, 10],
+            "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
         },
     ],
-    "audio": [],   # TTS 是 P1，本账号暂无 cosyvoice，D13 再定
+    "audio": [],
 }
 
 # ---- 价格表（元/次）：⚠️ 占位值，务必按官方价目表核对 ----
 PRICES = {
     "qwen-image-2.0-pro-2026-06-22": 0.3,
     "qwen-image-3.0": 0.25,
-    "wan2.7-tzv-2026-06-12": 1.0,
+    "happyhorse-1.1-i2v": 1.0,
+    "wan2.7-t2v-2026-06-12": 1.0,
 }

@@ -51,7 +51,7 @@ export async function streamGenerateText(
   }
 }
 
-/** 提交图片生成任务 → 后端入队（TaskRunner 异步接管）→ 返回 task_id */
+/** 提交图片生成任务 → 返回 task_id */
 export async function submitImageTask(body: {
   node_id: string
   model: string
@@ -60,6 +60,20 @@ export async function submitImageTask(body: {
   params: { size?: string; n?: number }
 }): Promise<{ task_id: string }> {
   return http('/generate/image', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 提交视频生成任务 → 返回 task_id（ref_file_ids 第一张作首帧） */
+export async function submitVideoTask(body: {
+  node_id: string
+  model: string
+  prompt: string
+  ref_file_ids?: string[]
+  params: { resolution?: string; duration?: number; ratio?: string }
+}): Promise<{ task_id: string }> {
+  return http('/generate/video', {
     method: 'POST',
     body: JSON.stringify(body),
   })
