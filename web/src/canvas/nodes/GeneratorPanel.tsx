@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { configApi } from '@/api/config';
-import { submitImageTask, submitVideoTask } from '@/api/generate';
+import { submitAudioTask, submitImageTask, submitVideoTask } from '@/api/generate';
 import { useElapsed } from '../hooks/useElapsed';
 import { useIncoming } from '../hooks/useIncoming';
 import { useNodeTask } from '../hooks/useNodeTask';
@@ -284,7 +284,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   );
 }
 
-/** 视频节点生成器 */
+/** 视频节点生成器：模型/分辨率/时长/比例 + 首帧注入。时长选项跟注册表。 */
 export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
   const incoming = useIncoming(nodeId);
   const task = useNodeTask(nodeId);
@@ -535,6 +535,179 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
           <Button size="sm" className="nodrag" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0 && firstFrames.length === 0)}>
             <Sparkles className="size-3.5" />
             生成视频
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 音频节点生成器（TTS）：模型/音色 + 文本注入。秒级任务。 */
+export function AudioGeneratorPanel({ nodeId }: { nodeId: string }) {
+  const incoming = useIncoming(nodeId);
+  const task = useNodeTask(nodeId);
+  const qc = useQueryClient();
+
+  const generator = useCanvasStore((s) => {
+    const g = s.nodes.find((n) => n.id === nodeId)?.data.generator;
+    return (g ?? null) as Record<string, unknown> | null;
+  });
+
+  const lastError = useCanvasStore((s) => {
+    const v = s.nodes.find((n) => n.id === nodeId)?.data.lastTaskError;
+    return typeof v === 'string' ? v : null;
+  });
+
+  const modelsQ = useQuery({
+    queryKey: ['modelRegistry'],
+    queryFn: configApi.models,
+    staleTime: Infinity,
+  });
+  const audioModels = modelsQ.data?.audio ?? [];
+
+  const open = useCanvasStore((s) =>
+    Boolean(s.nodes.find((n) => n.id === nodeId)?.data.generatorOpen),
+  );
+
+  const genPrompt = typeof generator?.prompt === 'string' ? generator.prompt : '';
+  const [prompt, setPrompt] = useState(genPrompt);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    return () => clearTimeout(timer.current);
+  }, []);
+
+  const onPromptChange = (next: string) => {
+    setPrompt(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        generator: { ...(generator ?? {}), prompt: next },
+      });
+    }, 400);
+  };
+
+  const modelId = typeof generator?.model === 'string' && generator.model
+    ? generator.model
+    : audioModels[0]?.id ?? '';
+
+  const modelVoices = audioModels.find((m) => m.id === modelId)?.voices ?? [];
+  const storedVoice = typeof generator?.voice === 'string' ? generator.voice : '';
+  const voice = modelVoices.some((v) => v.id === storedVoice)
+    ? storedVoice
+    : modelVoices[0]?.id ?? '';   // 音色回落（换模型时防御）
+
+  const setGen = (patch: Record<string, unknown>) => {
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      generator: { ...(generator ?? { prompt: '' }), model: modelId, voice, ...patch },
+    });
+  };
+
+  const injectedTexts = incoming
+    .filter((i) => i.kind === 'prompt')
+    .map((i) =>
+      typeof i.node.data.content === 'string' ? i.node.data.content : '',
+    )
+    .filter((t) => t.trim().length > 0);
+
+  const busy = task?.status === 'queued' || task?.status === 'running';
+
+  const submit = async () => {
+    const finalText = [...injectedTexts, prompt].filter(Boolean).join('\n\n');
+    if (!finalText.trim() || !modelId) return;
+    await submitAudioTask({
+      node_id: nodeId,
+      model: modelId,
+      prompt: finalText,
+      params: { voice: voice || undefined },
+    });
+    qc.invalidateQueries({ queryKey: ['activeTasks'] });
+  };
+
+  return (
+    <div className="nowheel">
+      <button
+        className="nodrag flex w-full items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() =>
+          useCanvasStore.getState().updateNodeData(nodeId, { generatorOpen: !open })
+        }
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        生成器
+        {busy && <Loader2 className="size-3 animate-spin text-blue-400" />}
+        <span className="ml-auto">
+          {injectedTexts.length > 0 && `注入 ${injectedTexts.length} 段文本`}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-2 flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={modelId}
+              onChange={(e) => setGen({ model: e.target.value })}
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
+              disabled={busy}
+            >
+              {audioModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={voice}
+              onChange={(e) => setGen({ voice: e.target.value })}
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
+              disabled={busy}
+            >
+              {modelVoices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <AutoTextarea
+            value={prompt}
+            onChange={onPromptChange}
+            placeholder="输入要朗读的文本（上游连线文本会自动拼接在前面）"
+            disabled={busy}
+            minRows={2}
+            maxRows={8}
+          />
+
+          {task && task.status === 'queued' && (
+            <p className="flex items-center gap-1.5 text-xs text-amber-500">
+              <Loader2 className="size-3 animate-spin" />
+              排队中…
+            </p>
+          )}
+          {task && task.status === 'running' && (
+            <p className="flex items-center gap-1.5 text-xs text-blue-500">
+              <Loader2 className="size-3 animate-spin" />
+              合成中…
+            </p>
+          )}
+          {task && task.status === 'failed' && (
+            <p className="text-xs text-destructive">
+              失败：{task.error ?? lastError ?? '未知错误'}
+              <Button
+                size="sm"
+                variant="outline"
+                className="nodrag ml-2 h-6"
+                onClick={() => void submit()}
+                disabled={busy}
+              >
+                重试
+              </Button>
+            </p>
+          )}
+
+          <Button size="sm" className="nodrag" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0)}>
+            <Sparkles className="size-3.5" />
+            合成语音
           </Button>
         </div>
       )}

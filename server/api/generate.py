@@ -1,11 +1,10 @@
-"""生成入口：LLM 流式（SSE）+ 图像/视频任务提交（含每日预算熔断）。"""
+"""生成入口：LLM 流式（SSE）+ 图像/视频/音频任务提交（含每日预算熔断）。"""
 import json
 import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 
 from api.stats import check_daily_budget
 from db import Node, SessionLocal, Task
@@ -21,7 +20,6 @@ class TextGenerateRequest(BaseModel):
 
 @router.post("/text")
 async def generate_text(body: TextGenerateRequest):
-    """LLM 流式生成（SSE）。LLM 便宜且快，不进熔断。"""
     gw = get_gateway()
 
     async def event_stream():
@@ -80,7 +78,7 @@ class VideoGenerateRequest(BaseModel):
     node_id: str
     model: str
     prompt: str = Field(min_length=1, max_length=8000)
-    ref_file_ids: list[str] = Field(default_factory=list)   # 第一张作首帧
+    ref_file_ids: list[str] = Field(default_factory=list)
     params: dict = Field(default_factory=dict)
 
 
@@ -104,6 +102,42 @@ async def generate_video(body: VideoGenerateRequest):
             params=json.dumps({
                 "prompt": body.prompt,
                 "ref_file_ids": body.ref_file_ids[:1],
+                **body.params,
+            }),
+            status="queued",
+        )
+        db.add(task)
+        db.commit()
+        return {"task_id": task.id}
+
+
+class AudioGenerateRequest(BaseModel):
+    node_id: str
+    model: str
+    prompt: str = Field(min_length=1, max_length=8000)   # 待合成文本
+    params: dict = Field(default_factory=dict)            # voice 等
+
+
+@router.post("/audio")
+async def generate_audio(body: AudioGenerateRequest):
+    """TTS 任务提交。TaskRunner 走同步通道（SDK + to_thread），秒级完成。"""
+    with SessionLocal() as db:
+        allowed, spent = check_daily_budget(db)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已达每日预算上限（今日已花费 ¥{spent:.2f}）",
+            )
+        node = db.get(Node, body.node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="节点不存在")
+        task = Task(
+            id=str(uuid.uuid4()),
+            node_id=body.node_id,
+            kind="audio",
+            model=body.model,
+            params=json.dumps({
+                "prompt": body.prompt,
                 **body.params,
             }),
             status="queued",

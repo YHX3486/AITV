@@ -78,3 +78,16 @@ export async function submitVideoTask(body: {
     body: JSON.stringify(body),
   })
 }
+
+/** 提交 TTS 任务 → 返回 task_id（prompt = 待合成文本） */
+export async function submitAudioTask(body: {
+  node_id: string
+  model: string
+  prompt: string
+  params: { voice?: string }
+}): Promise<{ task_id: string }> {
+  return http('/generate/audio', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}

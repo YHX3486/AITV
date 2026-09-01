@@ -14,12 +14,14 @@ if not DASHSCOPE_API_KEY:
 
 DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
 LLM_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+TTS_WS_BASE = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"   # TTS WebSocket
 
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", "50"))
 
-# mode: sync = 同步接口（2.0 系图像）；async = 异步接口（3.0 图像 / wan / happyhorse 视频）
-# durations 按各家文档设：happyhorse [3,15]、wan2.7 [2,15]
+# 通道说明：
+# LLM 流式（openai SDK）/ 图像同步+异步（httpx）/ 视频异步（httpx）
+# 音频 TTS（dashscope SDK，WebSocket 协议 httpx 不支持——唯一例外，见 M2 总结）
 MODEL_REGISTRY = {
     "text": [
         {"id": "qwen3.7-flash-2026-07-15", "label": "Qwen3.7 Flash · 快"},
@@ -65,7 +67,22 @@ MODEL_REGISTRY = {
             "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
         },
     ],
-    "audio": [],
+    "audio": [
+        {
+            "id": "qwen-audio-3.0-tts-flash",
+            "label": "语音合成 · Flash（快）",
+            "voices": [
+                {"id": "longanhuan_v3.6", "label": "龙暗桓"},
+            ],
+        },
+        {
+            "id": "qwen-audio-3.0-tts-plus",
+            "label": "语音合成 · Plus（高质量）",
+            "voices": [
+                {"id": "longanhuan_v3.6", "label": "龙暗桓"},
+            ],
+        },
+    ],
 }
 
 # ---- 价格表（元/次）：⚠️ 占位值，务必按官方价目表核对 ----
@@ -74,4 +91,6 @@ PRICES = {
     "qwen-image-3.0": 0.25,
     "happyhorse-1.1-i2v": 1.0,
     "wan2.7-t2v-2026-06-12": 1.0,
+    "qwen-audio-3.0-tts-flash": 0.1,
+    "qwen-audio-3.0-tts-plus": 0.2,
 }

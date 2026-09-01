@@ -1,5 +1,5 @@
 """进程内任务执行器：提交 → 轮询/同步等待 → 下载落盘 → 登记 files。
-图像按模型分流：qwen-image-2.x → 同步；qwen-image-3.x / wan 视频 → 异步。
+分流：图像2.0→同步；图像3.0/wan/happyhorse→异步轮询；音频TTS→同步（SDK+to_thread）。
 """
 import asyncio
 import base64
@@ -89,7 +89,6 @@ class TaskRunner:
         if "x" in size:
             size = size.replace("x", "*")
 
-        # 参考素材：本地文件 → data:base64（图像 I2I 与视频首帧共用）
         ref_images: list[str] = []
         for fid in ref_file_ids[:3]:
             encoded = self._encode_ref_image(fid)
@@ -97,7 +96,31 @@ class TaskRunner:
                 ref_images.append(encoded)
 
         try:
-            if kind == "image" and is_sync_model(model):
+            if kind == "audio":
+                # ==== 音频 TTS：同步通道（SDK 阻塞调用包 to_thread）====
+                with SessionLocal() as db:
+                    t = db.get(Task, task_id)
+                    if not t:
+                        return False
+                    t.status = "running"
+                    db.commit()
+
+                audio_bytes = await self.gw.generate_audio(
+                    model=model,
+                    voice=params.get("voice", "longanhuan_v3.6"),
+                    text=prompt,
+                )
+                file_id = self._save_audio_bytes(audio_bytes)
+                with SessionLocal() as db:
+                    t = db.get(Task, task_id)
+                    if not t:
+                        return False
+                    t.status = "succeeded"
+                    t.result_file_ids = json.dumps([file_id])
+                    t.finished_at = datetime.now(timezone.utc)
+                    db.commit()
+                return False
+            elif kind == "image" and is_sync_model(model):
                 # ==== 图像同步通道（qwen-image-2.0 系）====
                 with SessionLocal() as db:
                     t = db.get(Task, task_id)
@@ -122,9 +145,8 @@ class TaskRunner:
                     db.commit()
                 return False
             else:
-                # ==== 异步通道：图像 3.0 / wan 视频 ====
+                # ==== 异步通道：图像 3.0 / wan / happyhorse 视频 ====
                 if kind == "video":
-                    # 视频：第一张参考图作首帧（Base64 data URI）
                     first_frame = ref_images[0] if ref_images else None
                     pid = await self.gw.submit_video(
                         model=model,
@@ -173,11 +195,25 @@ class TaskRunner:
         except OSError:
             return None
 
-        # 视频首帧限 20MB，图像参考限 10MB——取更严的 10MB
         if len(raw) > 10 * 1024 * 1024:
             return None
 
         return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+    def _save_audio_bytes(self, audio_bytes: bytes) -> str:
+        """TTS 结果是原始字节（无 URL），直接落盘登记。"""
+        file_id = str(uuid.uuid4())
+        rel = f"generated/{file_id}.mp3"
+        (GENERATED_DIR / f"{file_id}.mp3").write_bytes(audio_bytes)
+
+        with SessionLocal() as db:
+            db.add(FileRecord(
+                id=file_id, kind="audio", path=rel,
+                mime="audio/mpeg", source="generated",
+                size=len(audio_bytes),
+            ))
+            db.commit()
+        return file_id
 
     async def _poll(self, task_id: str):
         while True:
@@ -211,11 +247,10 @@ class TaskRunner:
                 return
 
     async def _save_results(self, urls: list[str], kind: str) -> list[str]:
-        """立刻下载结果 → data/generated/ → files 表。扩展名按 kind 推导。"""
+        """立刻下载结果 → data/generated/ → files 表。"""
         ids: list[str] = []
         for url in urls:
             file_id = str(uuid.uuid4())
-            # URL 自带扩展名优先（.mp4/.png）；没有则按 kind 推导
             ext = Path(url.split("?")[0]).suffix
             if not ext:
                 ext = (
