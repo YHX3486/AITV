@@ -2,12 +2,18 @@ import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Clock, Download, Expand } from 'lucide-react';
 import type { NodeProps } from '@xyflow/react';
+import { createPortal } from 'react-dom';
 import { BaseNode } from './BaseNode';
 import { ImageGeneratorPanel } from './GeneratorPanel';
 import { ImageLightbox } from '../ImageLightbox';
 import { filesApi } from '@/api/files';
 import { tasksApi, type TaskResultFile } from '@/api/tasks';
 import { useCanvasStore } from '../store/canvasStore';
+
+/** 后端 created_at 是 naive UTC，补 Z 再解析（时区修复） */
+function parseUtc(s: string): Date {
+  return new Date(/[Zz]$/.test(s) ? s : `${s}Z`);
+}
 
 export function ImageNode({ id, data }: NodeProps) {
   const fileId = typeof data.currentFileId === 'string' ? data.currentFileId : null;
@@ -88,7 +94,7 @@ export function ImageNode({ id, data }: NodeProps) {
   return (
     <BaseNode id={id} type="image" footer={<ImageGeneratorPanel nodeId={id} />}>
       {fileId ? (
-        <div className="relative">
+        <div className="relative nowheel">
           {fileUrl ? (
             <img
               src={fileUrl}
@@ -103,7 +109,6 @@ export function ImageNode({ id, data }: NodeProps) {
             </div>
           )}
 
-          {/* 悬停操作条：放大 + 下载 */}
           {fileUrl && (
             <div className="absolute right-1 top-1 flex gap-1 opacity-60 transition-opacity hover:opacity-100">
               <button
@@ -126,7 +131,6 @@ export function ImageNode({ id, data }: NodeProps) {
             </div>
           )}
 
-          {/* 多图切换 */}
           {resultIds.length > 1 && (
             <>
               <button
@@ -174,7 +178,6 @@ export function ImageNode({ id, data }: NodeProps) {
         </div>
       )}
 
-      {/* 全屏预览：必须在 React Flow 节点树之外渲染才不会被 transform 缩放！ */}
       {previewOpen && fileUrl && (
         <ImageLightboxPortal
           src={fileUrl}
@@ -183,7 +186,6 @@ export function ImageNode({ id, data }: NodeProps) {
         />
       )}
 
-      {/* 历史版本面板 */}
       {historyOpen && (
         <HistoryList nodeId={id} onClose={() => setHistoryOpen(false)} />
       )}
@@ -199,14 +201,6 @@ export function ImageNode({ id, data }: NodeProps) {
     </BaseNode>
   );
 }
-
-/**
- * 用 Portal 把全屏层挂到 body——
- * 因为 React Flow 的节点在带 transform 的画布容器里，
- * fixed 定位会被祖先 transform 影响（fixed 失效，看起来就像"在节点里放大"）！
- * 这是本 bug 的真正根因。
- */
-import { createPortal } from 'react-dom';
 
 function ImageLightboxPortal(props: {
   src: string;
@@ -237,20 +231,20 @@ function HistoryList({ nodeId, onClose }: { nodeId: string; onClose: () => void 
   }
 
   return (
-    <div className="mt-2 flex flex-col gap-1 rounded-lg border bg-muted/30 p-1.5">
+    <div className="nowheel mt-2 flex flex-col gap-1 rounded-lg border bg-muted/30 p-1.5">
       <div className="flex items-center justify-between px-1">
         <span className="text-[10px] font-medium text-muted-foreground">生成历史</span>
-        <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={onClose}>
+        <button className="nodrag text-[10px] text-muted-foreground hover:text-foreground" onClick={onClose}>
           收起
         </button>
       </div>
-      <div className="max-h-[180px] overflow-y-auto">
+      <div className="nowheel max-h-[180px] overflow-y-auto">
         {historyQ.data.map((t) => {
           const first = t.result_files[0];
           return (
             <button
               key={t.id}
-              className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
+              className="nodrag flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
               onClick={() => {
                 if (first) {
                   useCanvasStore.getState().silentUpdateNodeData(nodeId, {
@@ -277,7 +271,7 @@ function HistoryList({ nodeId, onClose }: { nodeId: string; onClose: () => void 
               <span className="flex flex-col overflow-hidden">
                 <span className="truncate text-[10px]">{t.model}</span>
                 <span className="text-[9px] text-muted-foreground">
-                  {new Date(t.created_at).toLocaleString('zh-CN', {
+                  {parseUtc(t.created_at).toLocaleString('zh-CN', {
                     month: 'numeric',
                     day: 'numeric',
                     hour: '2-digit',

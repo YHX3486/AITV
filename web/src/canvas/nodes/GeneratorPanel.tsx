@@ -2,16 +2,63 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { configApi } from '@/api/config';
 import { submitImageTask, submitVideoTask } from '@/api/generate';
+import { useElapsed } from '../hooks/useElapsed';
 import { useIncoming } from '../hooks/useIncoming';
 import { useNodeTask } from '../hooks/useNodeTask';
 import { useCanvasStore } from '../store/canvasStore';
 
-/** 图片节点生成器（折叠面板）。生成配置存 node.data.generator，交互态全本地。
- * 换模型时 size/resolution/duration 等旧配置自动回落到当前模型合法值。 */
+/** 秒数格式化：<60 显示 "47"，>=60 显示 "1分23" */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}`;
+  return `${Math.floor(seconds / 60)}分${seconds % 60}`;
+}
+
+/** 自动伸缩 textarea（原生实现——shadcn Textarea 不透传 ref，量不到高度） */
+function AutoTextarea({
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  minRows = 2,
+  maxRows = 8,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  disabled?: boolean;
+  minRows?: number;
+  maxRows?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';                       // 先重置再量，否则只增不减
+    const lineHeight = 16;                          // text-xs ≈ 16px 行高
+    el.style.height = `${Math.min(
+      Math.max(el.scrollHeight, minRows * lineHeight),
+      maxRows * lineHeight,
+    )}px`;
+  }, [value, minRows, maxRows]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      rows={minRows}
+      className="nodrag nowheel w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+    />
+  );
+}
+
+/** 图片节点生成器 */
 export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   const incoming = useIncoming(nodeId);
   const task = useNodeTask(nodeId);
@@ -63,7 +110,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   const modelSizes = Object.values(imageModels.find((m) => m.id === modelId)?.sizes ?? {});
   const storedSize = typeof generator?.size === 'string' ? generator.size : '';
   const size = modelSizes.length > 0 && !modelSizes.includes(storedSize)
-    ? modelSizes[0]   // 换模型后旧尺寸（如 2.0 的 2048*2048 用于 3.0）回落
+    ? modelSizes[0]
     : storedSize || modelSizes[0];
 
   const n = typeof generator?.n === 'number' ? generator.n : 1;
@@ -91,6 +138,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   );
 
   const busy = task?.status === 'queued' || task?.status === 'running';
+  const imageElapsed = useElapsed(task?.created_at, task?.status === 'running');
 
   const submit = async () => {
     const finalPrompt = [...injectedTexts, prompt].filter(Boolean).join('\n\n');
@@ -106,9 +154,9 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   };
 
   return (
-    <div>
+    <div className="nowheel">
       <button
-        className="flex w-full items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="nodrag flex w-full items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
         onClick={() =>
           useCanvasStore.getState().updateNodeData(nodeId, { generatorOpen: !open })
         }
@@ -129,7 +177,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
             <select
               value={modelId}
               onChange={(e) => setGen({ model: e.target.value })}
-              className="h-8 rounded-md border bg-background px-2 text-xs"
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
               disabled={busy}
             >
               {imageModels.map((m) => (
@@ -141,7 +189,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
             <select
               value={size}
               onChange={(e) => setGen({ size: e.target.value })}
-              className="h-8 rounded-md border bg-background px-2 text-xs"
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
               disabled={busy}
             >
               {Object.entries(sizes).map(([ratio, px]) => (
@@ -160,7 +208,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
                 disabled={busy}
                 onClick={() => setGen({ n: v })}
                 className={cn(
-                  'size-6 rounded-md border text-xs transition-colors',
+                  'nodrag size-6 rounded-md border text-xs transition-colors',
                   n === v
                     ? 'border-ring bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:bg-accent',
@@ -186,16 +234,17 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
             </div>
           )}
 
-          <Textarea
+          <AutoTextarea
             value={prompt}
-            onChange={(e) => onPromptChange(e.target.value)}
+            onChange={onPromptChange}
             placeholder={
               refImages.length > 0
                 ? '描述如何基于参考图生成/编辑，例如：把这张图改成水彩画风格'
                 : '画面描述（上游连线文本会自动拼接在前面）'
             }
-            className="min-h-[60px] resize-none text-xs"
             disabled={busy}
+            minRows={2}
+            maxRows={8}
           />
 
           {task && task.status === 'queued' && (
@@ -207,7 +256,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
           {task && task.status === 'running' && (
             <p className="flex items-center gap-1.5 text-xs text-blue-500">
               <Loader2 className="size-3 animate-spin" />
-              生成中…
+              生成中… {formatElapsed(imageElapsed)}s
             </p>
           )}
           {task && task.status === 'failed' && (
@@ -216,7 +265,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
               <Button
                 size="sm"
                 variant="outline"
-                className="ml-2 h-6"
+                className="nodrag ml-2 h-6"
                 onClick={() => void submit()}
                 disabled={busy}
               >
@@ -225,7 +274,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
             </p>
           )}
 
-          <Button size="sm" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0)}>
+          <Button size="sm" className="nodrag" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0)}>
             <Sparkles className="size-3.5" />
             生成{n > 1 ? ` ${n} 张` : ''}
           </Button>
@@ -235,8 +284,7 @@ export function ImageGeneratorPanel({ nodeId }: { nodeId: string }) {
   );
 }
 
-/** 视频节点生成器：模型/分辨率/时长/比例 + 首帧注入。
- * 换模型时旧参数回落：resolution（如 happyhorse 480P → wan 720P）、duration（范围差异）。 */
+/** 视频节点生成器 */
 export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
   const incoming = useIncoming(nodeId);
   const task = useNodeTask(nodeId);
@@ -289,7 +337,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
   const storedResolution = typeof generator?.resolution === 'string' ? generator.resolution : '';
   const resolution = modelResolutions.includes(storedResolution)
     ? storedResolution
-    : modelResolutions[0];   // 旧值（如 happyhorse 的 480P）不在当前模型列表时回落
+    : modelResolutions[0];
 
   const modelDurations = videoModels.find((m) => m.id === modelId)?.durations ?? [5];
   const currentDuration = typeof generator?.duration === 'number'
@@ -297,7 +345,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
     : modelDurations[0];
   const duration = modelDurations.includes(currentDuration)
     ? currentDuration
-    : modelDurations[0];   // 换模型后旧 duration 超范围时回落
+    : modelDurations[0];
 
   const ratio = typeof generator?.ratio === 'string' && generator.ratio
     ? generator.ratio
@@ -329,6 +377,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
   );
 
   const busy = task?.status === 'queued' || task?.status === 'running';
+  const videoElapsed = useElapsed(task?.created_at, task?.status === 'running');
 
   const submit = async () => {
     const finalPrompt = [...injectedTexts, prompt].filter(Boolean).join('\n\n');
@@ -349,9 +398,9 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
   };
 
   return (
-    <div>
+    <div className="nowheel">
       <button
-        className="flex w-full items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="nodrag flex w-full items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
         onClick={() =>
           useCanvasStore.getState().updateNodeData(nodeId, { generatorOpen: !open })
         }
@@ -372,7 +421,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
             <select
               value={modelId}
               onChange={(e) => setGen({ model: e.target.value })}
-              className="h-8 rounded-md border bg-background px-2 text-xs"
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
               disabled={busy}
             >
               {videoModels.map((m) => (
@@ -384,7 +433,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
             <select
               value={resolution}
               onChange={(e) => setGen({ resolution: e.target.value })}
-              className="h-8 rounded-md border bg-background px-2 text-xs"
+              className="nodrag h-8 rounded-md border bg-background px-2 text-xs"
               disabled={busy}
             >
               {modelResolutions.map((r) => (
@@ -403,7 +452,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
                 disabled={busy}
                 onClick={() => setGen({ duration: v })}
                 className={cn(
-                  'rounded-md border px-2 py-0.5 text-xs transition-colors',
+                  'nodrag rounded-md border px-2 py-0.5 text-xs transition-colors',
                   duration === v
                     ? 'border-ring bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:bg-accent',
@@ -418,7 +467,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
                 <select
                   value={ratio}
                   onChange={(e) => setGen({ ratio: e.target.value })}
-                  className="h-6 rounded-md border bg-background px-1 text-xs"
+                  className="nodrag h-6 rounded-md border bg-background px-1 text-xs"
                   disabled={busy}
                 >
                   {model.ratios.map((r) => (
@@ -443,16 +492,17 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
             </div>
           )}
 
-          <Textarea
+          <AutoTextarea
             value={prompt}
-            onChange={(e) => onPromptChange(e.target.value)}
+            onChange={onPromptChange}
             placeholder={
               firstFrames.length > 0
                 ? '描述画面如何运动，例如：镜头缓缓推近，人物微笑'
                 : '描述视频内容（上游连线文本会自动拼接在前面）'
             }
-            className="min-h-[60px] resize-none text-xs"
             disabled={busy}
+            minRows={2}
+            maxRows={8}
           />
 
           {task && task.status === 'queued' && (
@@ -464,7 +514,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
           {task && task.status === 'running' && (
             <p className="flex items-center gap-1.5 text-xs text-blue-500">
               <Loader2 className="size-3 animate-spin" />
-              生成中…（视频通常需要 1-5 分钟）
+              生成中… {formatElapsed(videoElapsed)}s（视频通常需要 1-5 分钟）
             </p>
           )}
           {task && task.status === 'failed' && (
@@ -473,7 +523,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
               <Button
                 size="sm"
                 variant="outline"
-                className="ml-2 h-6"
+                className="nodrag ml-2 h-6"
                 onClick={() => void submit()}
                 disabled={busy}
               >
@@ -482,7 +532,7 @@ export function VideoGeneratorPanel({ nodeId }: { nodeId: string }) {
             </p>
           )}
 
-          <Button size="sm" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0 && firstFrames.length === 0)}>
+          <Button size="sm" className="nodrag" onClick={() => void submit()} disabled={busy || (!prompt.trim() && injectedTexts.length === 0 && firstFrames.length === 0)}>
             <Sparkles className="size-3.5" />
             生成视频
           </Button>

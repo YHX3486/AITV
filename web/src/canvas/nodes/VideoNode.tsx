@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Clock, Download, Expand } from 'lucide-react';
 import type { NodeProps } from '@xyflow/react';
@@ -8,7 +8,11 @@ import { VideoGeneratorPanel } from './GeneratorPanel';
 import { filesApi } from '@/api/files';
 import { tasksApi } from '@/api/tasks';
 import { useCanvasStore } from '../store/canvasStore';
-import { useEffect } from 'react';
+
+/** 后端 created_at 是 naive UTC，补 Z 再解析（时区修复） */
+function parseUtc(s: string): Date {
+  return new Date(/[Zz]$/.test(s) ? s : `${s}Z`);
+}
 
 export function VideoNode({ id, data }: NodeProps) {
   const fileId = typeof data.currentFileId === 'string' ? data.currentFileId : null;
@@ -31,7 +35,7 @@ export function VideoNode({ id, data }: NodeProps) {
   return (
     <BaseNode id={id} type="video" footer={<VideoGeneratorPanel nodeId={id} />}>
       {fileId ? (
-        <div className="relative">
+        <div className="relative nowheel">
           {fileUrl ? (
             <video
               src={fileUrl}
@@ -95,7 +99,6 @@ export function VideoNode({ id, data }: NodeProps) {
         </div>
       )}
 
-      {/* 全屏播放：Portal 脱离画布 transform（Lightbox 同款根因修复） */}
       {fullscreen && fileUrl && (
         <VideoFullscreenPortal
           src={fileUrl}
@@ -103,7 +106,6 @@ export function VideoNode({ id, data }: NodeProps) {
         />
       )}
 
-      {/* 历史（结构与 ImageNode 的 HistoryList 一致） */}
       {historyOpen ? (
         <HistoryList nodeId={id} onClose={() => setHistoryOpen(false)} />
       ) : (
@@ -157,18 +159,18 @@ function HistoryList({ nodeId, onClose }: { nodeId: string; onClose: () => void 
   }
 
   return (
-    <div className="mt-2 flex flex-col gap-1 rounded-lg border bg-muted/30 p-1.5">
+    <div className="nowheel mt-2 flex flex-col gap-1 rounded-lg border bg-muted/30 p-1.5">
       <div className="flex items-center justify-between px-1">
         <span className="text-[10px] font-medium text-muted-foreground">生成历史</span>
-        <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={onClose}>
+        <button className="nodrag text-[10px] text-muted-foreground hover:text-foreground" onClick={onClose}>
           收起
         </button>
       </div>
-      <div className="max-h-[180px] overflow-y-auto">
+      <div className="nowheel max-h-[180px] overflow-y-auto">
         {historyQ.data.map((t) => (
           <button
             key={t.id}
-            className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
+            className="nodrag flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
             onClick={() => {
               const first = t.result_files[0];
               if (first) {
@@ -186,7 +188,7 @@ function HistoryList({ nodeId, onClose }: { nodeId: string; onClose: () => void 
             <span className="flex flex-col overflow-hidden">
               <span className="truncate text-[10px]">{t.model}</span>
               <span className="text-[9px] text-muted-foreground">
-                {new Date(t.created_at).toLocaleString('zh-CN', {
+                {parseUtc(t.created_at).toLocaleString('zh-CN', {
                   month: 'numeric', day: 'numeric',
                   hour: '2-digit', minute: '2-digit',
                 })}

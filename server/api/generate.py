@@ -1,11 +1,13 @@
-"""生成入口：LLM 流式（SSE）+ 图像/视频任务提交。"""
+"""生成入口：LLM 流式（SSE）+ 图像/视频任务提交（含每日预算熔断）。"""
 import json
 import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from api.stats import check_daily_budget
 from db import Node, SessionLocal, Task
 from services.model_gateway import get_gateway
 
@@ -19,7 +21,7 @@ class TextGenerateRequest(BaseModel):
 
 @router.post("/text")
 async def generate_text(body: TextGenerateRequest):
-    """LLM 流式生成（SSE）。"""
+    """LLM 流式生成（SSE）。LLM 便宜且快，不进熔断。"""
     gw = get_gateway()
 
     async def event_stream():
@@ -48,6 +50,12 @@ class ImageGenerateRequest(BaseModel):
 @router.post("/image")
 async def generate_image(body: ImageGenerateRequest):
     with SessionLocal() as db:
+        allowed, spent = check_daily_budget(db)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已达每日预算上限（今日已花费 ¥{spent:.2f}）",
+            )
         node = db.get(Node, body.node_id)
         if not node:
             raise HTTPException(status_code=404, detail="节点不存在")
@@ -78,8 +86,13 @@ class VideoGenerateRequest(BaseModel):
 
 @router.post("/video")
 async def generate_video(body: VideoGenerateRequest):
-    """视频任务提交。wan 系走异步通道（TaskRunner 分发）。"""
     with SessionLocal() as db:
+        allowed, spent = check_daily_budget(db)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已达每日预算上限（今日已花费 ¥{spent:.2f}）",
+            )
         node = db.get(Node, body.node_id)
         if not node:
             raise HTTPException(status_code=404, detail="节点不存在")
@@ -90,7 +103,7 @@ async def generate_video(body: VideoGenerateRequest):
             model=body.model,
             params=json.dumps({
                 "prompt": body.prompt,
-                "ref_file_ids": body.ref_file_ids[:1],   # 首帧只取第一张
+                "ref_file_ids": body.ref_file_ids[:1],
                 **body.params,
             }),
             status="queued",

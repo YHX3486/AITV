@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { ChevronDown, ChevronRight, Paperclip, TextCursorInput } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -32,10 +32,43 @@ export function BaseNode({
   const meta = NODE_META[type];
   const Icon = meta.icon;
   const incoming = useIncoming(id);
-  const task = useNodeTask(id);   // D4：状态点接真数据
+  const task = useNodeTask(id);
   const collapsed = useCanvasStore((s) =>
     Boolean(s.nodes.find((n) => n.id === id)?.data.collapsed),
   );
+
+  /* 名称：node.data.name 优先，回落类型默认名（ND-05 重命名） */
+  const name = useCanvasStore((s) => {
+    const v = s.nodes.find((n) => n.id === id)?.data.name;
+    return typeof v === 'string' && v.trim() ? v : meta.label;
+  });
+
+  /* 重命名状态：editing 时渲染输入框（交互态全本地，铁律 #2） */
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const startRename = () => {
+    setDraft(name);
+    setEditing(true);
+  };
+
+  const commitRename = () => {
+    const next = draft.trim();
+    if (next && next !== name) {
+      useCanvasStore.getState().updateNodeData(id, { name: next });
+    }
+    setEditing(false);
+  };
+
+  const cancelRename = () => setEditing(false);
 
   /* 状态优先级：活动任务 > node.data 里上次静默写入的 lastTaskStatus */
   const lastStatus = useCanvasStore((s) => {
@@ -62,14 +95,37 @@ export function BaseNode({
 
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <Icon className={cn('size-4 shrink-0', meta.iconClass)} />
-        <span className="text-sm font-medium">{meta.label}</span>
+
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename();
+              if (e.key === 'Escape') cancelRename();
+            }}
+            className="nodrag min-w-0 flex-1 rounded border bg-background px-1 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            maxLength={50}
+          />
+        ) : (
+          <span
+            className="nodrag min-w-0 flex-1 cursor-text truncate text-sm font-medium"
+            onDoubleClick={startRename}
+            title="双击重命名"
+          >
+            {name}
+          </span>
+        )}
+
         <span
-          className={cn('ml-auto size-2 rounded-full', STATUS_DOT[status])}
+          className={cn('ml-auto size-2 shrink-0 rounded-full', STATUS_DOT[status])}
           title={status}
         />
         <button
           onClick={toggleCollapsed}
-          className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+          className="nodrag rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
           title={collapsed ? '展开' : '折叠'}
         >
           {collapsed ? (
@@ -105,14 +161,18 @@ export function BaseNode({
               {references.map(({ node }) => {
                 const refMeta = NODE_META[node.type as CanvasNodeType];
                 const RefIcon = refMeta?.icon;
+                const refName =
+                  typeof node.data.name === 'string' && node.data.name
+                    ? node.data.name
+                    : refMeta?.label ?? node.type;
                 return (
                   <span
                     key={node.id}
                     className="flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                    title={`参考：${refMeta?.label ?? node.type} 节点`}
+                    title={`参考：${refName}`}
                   >
                     {RefIcon && <RefIcon className="size-3" />}
-                    {refMeta?.label ?? node.type}
+                    {refName}
                   </span>
                 );
               })}

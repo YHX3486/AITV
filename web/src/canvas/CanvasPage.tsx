@@ -14,6 +14,7 @@ import { ArrowLeft, Cloud, CloudOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { canvasApi } from '@/api/canvas';
 import { filesApi } from '@/api/files';
+import { statsApi } from '@/api/stats';
 import { nodeTypes } from './nodes';
 import { EmptyHint } from './EmptyHint';
 import { useActiveTasks } from './hooks/useNodeTask';
@@ -40,10 +41,16 @@ export default function CanvasPage(props: {
 function CanvasPageInner({ project, onBack }: { project: Project; onBack: () => void }) {
   useShortcuts();
   const saveState = useAutosave();
-  useActiveTasks();        // 画布级任务轮询
-  useTaskBackfill();       // D5：任务完成回填节点
-  useReconcile();          // D9：离场对账（不在场完成的任务补回填）
+  useActiveTasks();
+  useTaskBackfill();
+  useReconcile();
   const rf = useReactFlow();
+
+  const usageQ = useQuery({
+    queryKey: ['usage'],
+    queryFn: statsApi.usage,
+    refetchInterval: 30000,
+  });
 
   const canvasQ = useQuery({
     queryKey: ['canvas', project.id],
@@ -135,6 +142,8 @@ function CanvasPageInner({ project, onBack }: { project: Project; onBack: () => 
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
+        deleteKeyCode={['Backspace', 'Delete']}
+        zoomOnScroll
         onDrop={(e) => {
           e.preventDefault();
           const files = Array.from(e.dataTransfer.files);
@@ -209,6 +218,18 @@ function CanvasPageInner({ project, onBack }: { project: Project; onBack: () => 
             </>
           )}
         </span>
+        {usageQ.data && (
+          <span
+            className={`ml-2 flex items-center gap-1 border-l pl-2 text-xs ${
+              usageQ.data.remaining_budget < 10
+                ? 'text-destructive'
+                : 'text-muted-foreground'
+            }`}
+            title={`累计 ${usageQ.data.total_count} 次 · ¥${usageQ.data.total_cost}`}
+          >
+            ¥{usageQ.data.today_cost} / {usageQ.data.daily_budget}
+          </span>
+        )}
       </div>
 
       {menu && <CanvasContextMenu menu={menu} onClose={() => setMenu(null)} />}
