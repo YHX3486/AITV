@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="libtv-lite", lifespan=lifespan)
+app = FastAPI(title="AItv-lite", lifespan=lifespan)
 app.include_router(api_router)
 
 

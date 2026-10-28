@@ -1,8 +1,8 @@
-# libtv-lite
+# AItv-lite
 
 > 无限画布 · AI 视频创作
 
-libtv-lite 是一个**基于无限画布的 AI 短视频创作工作台**：把「写文案 → 配图 → 生成视频 → 语音配音」的完整流程拆成画布上的节点，节点之间用连线表达依赖（上游文本 = 提示词、上游图片 = 参考素材），所有生成能力由**阿里云百炼（DashScope）多模态大模型**提供。
+AItv-lite 是一个**基于无限画布的 AI 短视频创作工作台**：把「写文案 → 配图 → 生成视频 → 语音配音」的完整流程拆成画布上的节点，节点之间用连线表达依赖（上游文本 = 提示词、上游图片 = 参考素材），所有生成能力由**阿里云百炼（DashScope）多模态大模型**提供。
 
 ## ✨ 功能特性
 
@@ -46,7 +46,7 @@ libtv-lite 是一个**基于无限画布的 AI 短视频创作工作台**：把�
 ## 📁 目录结构
 
 ```
-libtv-lite/
+AItv-lite/
 ├── server/                  # FastAPI 后端
 │   ├── main.py              #   入口：API + 静态托管 web/dist + /files
 │   ├── api/                 #   路由：projects / canvas / files / config / generate / tasks / stats

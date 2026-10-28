@@ -116,7 +116,7 @@ function ProjectListPage({
               <Film className="size-5" />
             </div>
             <div>
-              <h1 className="text-xl font-semibold">libtv-lite</h1>
+              <h1 className="text-xl font-semibold">AItv-lite</h1>
               <p className="text-xs text-muted-foreground">无限画布 · AI 视频创作</p>
             </div>
           </div>
