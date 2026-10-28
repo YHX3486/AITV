@@ -56,6 +56,7 @@ def put_canvas(project_id: str, body: CanvasPut, db: Session = Depends(get_db)):
     project = _get_project_or_404(db, project_id)
 
     # ---- 前置校验：问题数据直接 400，不碰数据库 ----
+    # （节点 type 的枚举校验由 schemas.CanvasNode 的 Literal 在反序列化层完成，422 拦截，这里不重复）
     payload_ids: set[str] = set()
     for n in body.nodes:
         if n.id in payload_ids:

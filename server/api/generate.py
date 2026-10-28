@@ -7,10 +7,28 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.stats import check_daily_budget
-from db import Node, SessionLocal, Task
+from db import FileRecord, Node, SessionLocal, Task
 from services.model_gateway import get_gateway
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
+
+
+def _validate_ref_files(db, ref_file_ids: list[str], expected_kind: str):
+    """参考素材必须真实存在且类型匹配。
+
+    图生图 / 图生视频（首帧）都只接受图片素材；
+    否则任务会一直跑到 model_gateway 提交阶段才失败，报错难懂且白占队列。
+    """
+    for fid in ref_file_ids:
+        f = db.get(FileRecord, fid)
+        if not f:
+            raise HTTPException(status_code=400, detail=f"参考素材不存在：{fid}")
+        if f.kind != expected_kind:
+            raise HTTPException(
+                status_code=400,
+                detail=f"参考素材 {fid} 类型是 {f.kind}，"
+                       f"{expected_kind} 生成只接受 {expected_kind} 参考素材",
+            )
 
 
 class TextGenerateRequest(BaseModel):
@@ -21,6 +39,18 @@ class TextGenerateRequest(BaseModel):
 @router.post("/text")
 async def generate_text(body: TextGenerateRequest):
     gw = get_gateway()
+
+    # 与媒体通道共用每日预算闸门：预算耗尽后文本也拒绝（全局停用，防漏网烧钱）。
+    # ⚠️ 局限：LLM 按 token 计费，PRICES 目前没有文本模型价格，
+    # 这里只做"花超即熔断"，文本本身暂不计入 today_cost——
+    # 待拿到官方 token 价格表后再补精确计量（见 core/config.py PRICES 注释）。
+    with SessionLocal() as db:
+        allowed, spent = check_daily_budget(db)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已达每日预算上限（今日已花费 ¥{spent:.2f}）",
+            )
 
     async def event_stream():
         try:
@@ -57,6 +87,7 @@ async def generate_image(body: ImageGenerateRequest):
         node = db.get(Node, body.node_id)
         if not node:
             raise HTTPException(status_code=404, detail="节点不存在")
+        _validate_ref_files(db, body.ref_file_ids, "image")
         task = Task(
             id=str(uuid.uuid4()),
             node_id=body.node_id,
@@ -94,6 +125,8 @@ async def generate_video(body: VideoGenerateRequest):
         node = db.get(Node, body.node_id)
         if not node:
             raise HTTPException(status_code=404, detail="节点不存在")
+        # 图生视频用第一张上游图做首帧；这里要求全部参考素材都是图片
+        _validate_ref_files(db, body.ref_file_ids, "image")
         task = Task(
             id=str(uuid.uuid4()),
             node_id=body.node_id,

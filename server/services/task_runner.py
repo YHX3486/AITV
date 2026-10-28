@@ -34,7 +34,34 @@ class TaskRunner:
         self.sem = asyncio.Semaphore(MAX_CONCURRENT)
         self.inflight: set[str] = set()
 
+    def _recover_stale_tasks(self):
+        """启动时回收僵尸任务。
+
+        状态 = running 但没有 provider_task_id 的任务，说明进程是在同步通道
+        （图像2.0 / TTS，先置 running 再调用百炼）执行中途被杀：
+        上游尚未返回可续查的任务 id，永远等不到 _poll 的终态。
+        把它们重置回 queued 让本轮重新提交；
+        （running + 有 provider_task_id 的走 _lifecycle 的 is_recovery 续查，不动。）
+
+        已知取舍：若崩溃前上游其实已成功（同步图像已扣费但本地没登记），
+        重跑会重复计费一次——比起永久卡死的僵尸任务，宁可重试，注释留档。"""
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(Task).where(
+                    Task.status == "running",
+                    Task.provider_task_id.is_(None),
+                )
+            ).all()
+            for t in rows:
+                print(
+                    f"[TaskRunner] 回收僵尸任务 {t.id}（{t.kind}）："
+                    f"running 且无 provider_task_id → 重置为 queued"
+                )
+                t.status = "queued"
+            db.commit()
+
     async def run(self):
+        self._recover_stale_tasks()
         while True:
             try:
                 with SessionLocal() as db:

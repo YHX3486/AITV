@@ -18,6 +18,7 @@ TTS_WS_BASE = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"   # TTS WebSock
 
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", "50"))
+UPLOAD_MAX_MB = int(os.getenv("UPLOAD_MAX_MB", "1024"))   # 单文件上传上限（MB）
 
 # 通道说明：
 # LLM 流式（openai SDK）/ 图像同步+异步（httpx）/ 视频异步（httpx）

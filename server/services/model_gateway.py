@@ -208,6 +208,22 @@ class ModelGateway:
             f.write(resp.content)
         return len(resp.content)
 
+    async def aclose(self):
+        """进程退出时释放连接池。
+
+        uvicorn --reload 会反复启停进程，不关连接会累积句柄；
+        单测/脚本里用完后也应该调一次。
+        """
+        for client in (self.http, self.download):
+            try:
+                await client.aclose()
+            except Exception:   # noqa: BLE001  关闭阶段不抛，避免掩盖退出流程
+                pass
+        try:
+            await self.llm.close()
+        except Exception:   # noqa: BLE001
+            pass
+
 
 _gateway: ModelGateway | None = None
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
+from core.config import UPLOAD_MAX_MB
 from db import DATA_DIR, FileRecord, SessionLocal
 
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -41,10 +42,20 @@ async def save_upload(file: UploadFile) -> FileRecord:
     abs_path = UPLOADS_DIR / f"{file_id}{ext}"
 
     size = 0
-    with abs_path.open("wb") as f:
-        while chunk := await file.read(1024 * 1024):   # 1MB 分块，大文件也不爆内存
-            size += len(chunk)
-            f.write(chunk)
+    max_bytes = UPLOAD_MAX_MB * 1024 * 1024
+    try:
+        with abs_path.open("wb") as f:
+            while chunk := await file.read(1024 * 1024):   # 1MB 分块，大文件也不爆内存
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过大小上限（{UPLOAD_MAX_MB}MB），已拒绝",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        abs_path.unlink(missing_ok=True)   # 删掉写了一半的文件
+        raise
 
     record = FileRecord(
         id=file_id,

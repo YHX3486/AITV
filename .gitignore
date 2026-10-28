@@ -18,6 +18,28 @@ server/.env
 server/check_*.py
 server/test_req.json
 
+# 密钥（保留模板 .env.example）
+.env
+.env.local
+.env.*.local
+server/.env
+server/.env.local
+
+# 数据库文件（server/data 已整体忽略，这里再兜一层，防止误移动后上传）
+*.db
+*.db-wal
+*.db-shm
+
+# 缓存 / 日志
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+
 # 系统垃圾
 .DS_Store
 Thumbs.db
